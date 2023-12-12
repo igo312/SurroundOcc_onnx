@@ -1,0 +1,8 @@
+ckpts/**
+build*
+chamfer.egg-info*
+dist
+.vscode
+__pycache__/
+*.log
+*.onnx

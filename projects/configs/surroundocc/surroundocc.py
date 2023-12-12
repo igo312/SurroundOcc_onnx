@@ -40,7 +40,7 @@ model = dict(
     use_grid_mask=True,
     use_semantic=use_semantic,
     img_backbone=dict(
-       type='ResNet',
+       type='ResNet_DL',
        depth=101,
        num_stages=4,
        out_indices=(1,2,3),
@@ -48,8 +48,9 @@ model = dict(
        norm_cfg=dict(type='BN2d', requires_grad=False),
        norm_eval=True,
        style='caffe',
-       #with_cp=True, # using checkpoint to save GPU memory
-       dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False), # original DCNv2 will print log when perform load_state_dict
+       with_cp=False, # using checkpoint to save GPU memory
+    #    dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False), # original DCNv2 will print log when perform load_state_dict
+        dcn = None,
        stage_with_dcn=(False, False, True, True)),
     img_neck=dict(
         type='FPN',
@@ -76,6 +77,7 @@ model = dict(
         transformer_template=dict(
             type='PerceptionTransformer',
             embed_dims=_dim_,
+            num_cams = 2,
             encoder=dict(
                 type='OccEncoder',
                 num_layers=_num_layers_,
@@ -86,9 +88,10 @@ model = dict(
                     attn_cfgs=[
                         dict(
                             type='SpatialCrossAttention',
+                            num_cams = 2,
                             pc_range=point_cloud_range,
                             deformable_attention=dict(
-                                type='MSDeformableAttention3D',
+                                type='MSDeformableAttention3D_DL',
                                 embed_dims=_dim_,
                                 num_points=_num_points_,
                                 num_levels=1),
