@@ -20,6 +20,9 @@ from mmdet.datasets import replace_ImageToTensor
 import time
 import os.path as osp
 import numpy as np
+import onnxsim
+import onnx 
+
 try:
     from mmcv.onnx.symbolic import register_extra_symbolics
 except ModuleNotFoundError:
@@ -147,15 +150,15 @@ def main():
     fp16_cfg = cfg.get('fp16', None)
     if fp16_cfg is not None:
         wrap_fp16_model(model)
-    # checkpoint = load_checkpoint(model, args.checkpoint, map_location='cpu')
+    checkpoint = load_checkpoint(model, args.checkpoint, map_location='cpu')
   
-    # # old versions did not save class info in checkpoints, this walkaround is
-    # # for backward compatibility
-    # if 'CLASSES' in checkpoint.get('meta', {}):
-    #     model.CLASSES = checkpoint['meta']['CLASSES']
-    # # palette for visualization in segmentation tasks
-    # if 'PALETTE' in checkpoint.get('meta', {}):
-    #     model.PALETTE = checkpoint['meta']['PALETTE']
+    # old versions did not save class info in checkpoints, this walkaround is
+    # for backward compatibility
+    if 'CLASSES' in checkpoint.get('meta', {}):
+        model.CLASSES = checkpoint['meta']['CLASSES']
+    # palette for visualization in segmentation tasks
+    if 'PALETTE' in checkpoint.get('meta', {}):
+        model.PALETTE = checkpoint['meta']['PALETTE']
 
     
     
@@ -164,19 +167,17 @@ def main():
     model.eval()
     dummy_input = torch.randn([1, 2, 3, 736, 1280], dtype=torch.float32).cuda()
     img_meta = [{}]
-    # img_meta[0]['img'] = dummy_input
     img_meta[0]['img_shape'] =  torch.Tensor([[480, 800]]).cuda()
-    # img_meta[0]['lidar2img'] = np.random.randn(2,4,4).astype(np.float32)
     img_meta[0]['lidar2img'] = torch.randn((2,4,4), dtype=torch.float32).cuda()
     # with torch.no_grad():
     #     output = model(dummy_input, img_meta)
     #     print("hello")
-    # scripted_model = torch.jit.script(model)
+    f = "./surroundocc.dl.onnx"
     torch.onnx.export(
         model,
         (dummy_input, img_meta),
-        "./surroundocc.dl.onnx",
-        input_names=['input', 'input_meta_shape'],
+        f,
+        input_names=['input', 'input_meta_shape', 'input_meta_lidar2img'],
         keep_initializers_as_inputs=True,
         export_params=True,
         do_constant_folding=True,
@@ -184,6 +185,12 @@ def main():
         opset_version=11
 
     )
+    onnx_model = onnx.load(f)
+    onnx_model, check = onnxsim.simplify(onnx_model)
+    f_new = "./surroundocc.dl.sim.onnx"
+    if check:
+        print("onnx simplified done")
+        onnx.save(onnx_model, f_new)
 
 
 if __name__ == '__main__':

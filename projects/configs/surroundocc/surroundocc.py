@@ -49,8 +49,8 @@ model = dict(
        norm_eval=True,
        style='caffe',
        with_cp=False, # using checkpoint to save GPU memory
-    #    dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False), # original DCNv2 will print log when perform load_state_dict
-        dcn = None,
+       dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False), # original DCNv2 will print log when perform load_state_dict
+        # dcn = None,
        stage_with_dcn=(False, False, True, True)),
     img_neck=dict(
         type='FPN',
