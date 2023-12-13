@@ -1,7 +1,6 @@
 # Bring Up Doc 
 源码链接： https://github.com/weiyithu/SurroundOcc
 
-gitlab链接(可直接拉这个仓库，安装好环境后一条命令导出)： http://ext-gitlab.denglin.com/ego312/surroundocc-onnx-export.git
 
 ## 环境安装
 使用NV 1080Ti的机器进行导出，mmdet3d需要nv环境
