@@ -628,6 +628,12 @@ class MSDeformableAttention3D_DL(BaseModule):
                 value, spatial_shapes, level_start_index, sampling_locations,
                 attention_weights, self.im2col_step, bs, num_queries, embed_*num_heads)
         else:
+            # bs ,num_queries, num_heads, num_levels, num_points, _ = sampling_locations.shape
+            # bs, num_keys, num_heads, embed_ = value.shape
+            # MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32_DL
+            # output = MultiScaleDeformableAttnFunction.apply(
+            #     value, spatial_shapes, level_start_index, sampling_locations,
+            #     attention_weights, self.im2col_step, bs, num_queries, embed_*num_heads)
             output = multi_scale_deformable_attn_pytorch(
                 value, spatial_shapes, sampling_locations, attention_weights)
         if not self.batch_first:

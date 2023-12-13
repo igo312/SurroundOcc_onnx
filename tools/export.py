@@ -33,6 +33,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='MMDet test (and eval) a model')
     parser.add_argument('--config', help='test config file path')
+    parser.add_argument('--cuda', action="store_true", help="export with cuda mode")
     parser.add_argument('--checkpoint', help='checkpoint file')
     parser.add_argument('--show', action='store_true', help='show results')
     parser.add_argument(
@@ -150,29 +151,39 @@ def main():
     fp16_cfg = cfg.get('fp16', None)
     if fp16_cfg is not None:
         wrap_fp16_model(model)
-    checkpoint = load_checkpoint(model, args.checkpoint, map_location='cpu')
-  
-    # old versions did not save class info in checkpoints, this walkaround is
-    # for backward compatibility
-    if 'CLASSES' in checkpoint.get('meta', {}):
-        model.CLASSES = checkpoint['meta']['CLASSES']
-    # palette for visualization in segmentation tasks
-    if 'PALETTE' in checkpoint.get('meta', {}):
-        model.PALETTE = checkpoint['meta']['PALETTE']
+    if args.checkpoint:
+        checkpoint = load_checkpoint(model, args.checkpoint, map_location='cpu')
+    
+        # old versions did not save class info in checkpoints, this walkaround is
+        # for backward compatibility
+        if 'CLASSES' in checkpoint.get('meta', {}):
+            model.CLASSES = checkpoint['meta']['CLASSES']
+        # palette for visualization in segmentation tasks
+        if 'PALETTE' in checkpoint.get('meta', {}):
+            model.PALETTE = checkpoint['meta']['PALETTE']
 
     
     
     # export 
     model = model
     model.eval()
-    dummy_input = torch.randn([1, 6, 3, 736, 1280], dtype=torch.float32)
-    img_meta = [{}]
-    img_meta[0]['img_shape'] =  torch.Tensor([[480, 800]])
-    img_meta[0]['lidar2img'] = torch.randn((6,4,4), dtype=torch.float32)
+    if args.cuda:
+        #TODO use nv 1080Ti, the gpu memory is not enough, so add the spatial_cross_attention:L631 codes, therefore, use cpu also can export 3d plugin
+        model = model.cuda()
+        dummy_input = torch.randn([1, 6, 3, 736, 1280], dtype=torch.float32).cuda()
+        img_meta = [{}]
+        img_meta[0]['img_shape'] =  torch.Tensor([[480, 800]]).cuda()
+        img_meta[0]['lidar2img'] = torch.randn((6,4,4), dtype=torch.float32).cuda()
+    else:
+        dummy_input = torch.randn([1, 6, 3, 736, 1280], dtype=torch.float32)
+        img_meta = [{}]
+        img_meta[0]['img_shape'] =  torch.Tensor([[480, 800]])
+        img_meta[0]['lidar2img'] = torch.randn((6,4,4), dtype=torch.float32)
     # with torch.no_grad():
     #     output = model(dummy_input, img_meta)
     #     print("hello")
     f = "./surroundocc.dl.onnx"
+    
     torch.onnx.export(
         model,
         (dummy_input, img_meta),
