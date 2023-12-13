@@ -77,7 +77,7 @@ model = dict(
         transformer_template=dict(
             type='PerceptionTransformer',
             embed_dims=_dim_,
-            num_cams = 2,
+            num_cams = 6,
             encoder=dict(
                 type='OccEncoder',
                 num_layers=_num_layers_,
@@ -88,7 +88,7 @@ model = dict(
                     attn_cfgs=[
                         dict(
                             type='SpatialCrossAttention',
-                            num_cams = 2,
+                            num_cams = 6,
                             pc_range=point_cloud_range,
                             deformable_attention=dict(
                                 type='MSDeformableAttention3D_DL',

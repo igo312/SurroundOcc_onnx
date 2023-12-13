@@ -163,12 +163,12 @@ def main():
     
     
     # export 
-    model = model.cuda()
+    model = model
     model.eval()
-    dummy_input = torch.randn([1, 2, 3, 736, 1280], dtype=torch.float32).cuda()
+    dummy_input = torch.randn([1, 6, 3, 736, 1280], dtype=torch.float32)
     img_meta = [{}]
-    img_meta[0]['img_shape'] =  torch.Tensor([[480, 800]]).cuda()
-    img_meta[0]['lidar2img'] = torch.randn((2,4,4), dtype=torch.float32).cuda()
+    img_meta[0]['img_shape'] =  torch.Tensor([[480, 800]])
+    img_meta[0]['lidar2img'] = torch.randn((6,4,4), dtype=torch.float32)
     # with torch.no_grad():
     #     output = model(dummy_input, img_meta)
     #     print("hello")
