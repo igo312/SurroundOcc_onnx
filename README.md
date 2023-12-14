@@ -14,6 +14,6 @@ python ./tools/export.py --config ./projects/configs/surroundocc/surroundocc.py 
 - [x] resnet 中DCN的算子替换。
 - [x] cpu模式支持：若使用cpu模式，MSDeformableAttention3D走的是`multi_scale_deformable_attn_pytorch`函数，不需要额外的plugin。
 - [ ] cuda模式支持：cuda模式下MSDeformableAttention3D将走plugin。本人使用的是NV1080Ti，走cuda模式的导出会爆显存,目前未成功导出过
-- [x] tag v0.1.1 的deformableConv op算子和内网的对齐，目前mmcv v1.4.0 与当前的实现有所不同
+- [x] tag v1.0.0 的deformableConv op算子和DL内网的对齐，目前mmcv v1.4.0 与当前的实现有所不同
 
 
