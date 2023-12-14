@@ -30,77 +30,83 @@ from .backbone import *
 #### 2.1 算子注册
 函数MultiScaleDeformableAttnFunction_fp32已经提供了清楚的输入输出大小，根据大小传递空数据，并将算子进行注册，定义函数MultiScaleDeformableAttnFunction_fp32_DL进行调用。
 ```
-class MultiScaleDeformableAttnFunction_fp32_DL(torch.autograd.Function):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class ModulatedDeformConv2dFunction(torch.autograd.Function):
 
     @staticmethod
-    def forward(g, occ_value, occ_value_spatial_shapes, oc__value_level_start_index,
-                sampling_locations, attention_weights, im2col_step, bs = 1, num_queries=100, num_embed=200):
-        """GPU version of multi-scale deformable attention.
-
-        Args:
-            value (Tensor): The value has shape
-                (bs, num_keys, mum_heads, embed_dims//num_heads)
-            value_spatial_shapes (Tensor): Spatial shape of
-                each feature map, has shape (num_levels, 2),
-                last dimension 2 represent (h, w)
-            sampling_locations (Tensor): The location of sampling points,
-                has shape
-                (bs ,num_queries, num_heads, num_levels, num_points, 2),
-                the last dimension 2 represent (x, y).
-            attention_weights (Tensor): The weight of sampling points used
-                when calculate the attention, has shape
-                (bs ,num_queries, num_heads, num_levels, num_points),
-            im2col_step (Tensor): The step used in image to column.
-
-        Returns:
-            Tensor: has shape (bs, num_queries, embed_dims)
-        """
-        bs ,num_queries, num_heads, num_levels, num_points, _ = sampling_locations.shape
-        bs, num_keys, num_heads, embed_ = occ_value.shape
-        # bs = sampling_locations.shape[0]
-        # num_queries, num_heads = sampling_locations.shape[1], sampling_locations.shape[2]
-        # num_heads, embed_ = value.shape[2], value.shape[3]
+    def symbolic(g, input, offset, weight, stride, padding,
+                 dilation, groups, deform_groups, bias=False, im2col_step=32):
         
-        return occ_value.new_zeros((bs, num_queries, embed_ * num_heads))
-    
-        ctx.im2col_step = im2col_step
-        output = ext_module.ms_deform_attn_forward(
-            value,
-            value_spatial_shapes,
-            value_level_start_index,
-            sampling_locations,
-            attention_weights,
-            im2col_step=ctx.im2col_step)
-        # ctx.save_for_backward(value, value_spatial_shapes,
-        #                       value_level_start_index, sampling_locations,
-        #                       attention_weights)
-        return output
+        return g.op(
+            'DL::DeformConv2d',
+            input,
+            offset,
+            weight,
+            stride_i=stride,
+            padding_i=_quadruple(padding[0]),
+            dilation_i=dilation,
+            groups_i=groups,
+            deform_groups_i=deform_groups,
+            bias_i=bias,
+            im2col_step_i=im2col_step)
 
     @staticmethod
-    def symbolic(g, occ_value, occ_value_spatial_shapes, occ_value_level_start_index,
-                sampling_locations, attention_weights, im2col_step, bs = 1, num_queries=100, num_embed=200):
-        # bs, num_keys, num_heads, embed_ = value.shape
-        # bs ,num_queries, num_heads, num_levels, num_points, _ = sampling_locations.shape
-        # bs = sampling_locations.shape[0]
-        # bs = sampling_locations.size(0)
-        # num_queries, num_heads = sampling_locations.shape[1], sampling_locations.shape[2]
-        # num_heads, embed_ = value.shape[2], value.shape[3]
-        return g.op("DL::MultiScaleDeformableAttnFunction",
-            occ_value,
-            occ_value_spatial_shapes,
-            occ_value_level_start_index,
-            sampling_locations,
-            attention_weights,
-            bs,
-            num_queries,
-            num_embed,
-            im2col_step_i = im2col_step,
-            # num_batch_i = bs,
-            # num_queries_i = num_queries,
-            # num_embed_i = num_embed
-            )
+    def forward(ctx,
+                input,
+                offset,
+                weight,
+                stride=1,
+                padding=0,
+                dilation=1,
+                groups=1,
+                deform_groups=1,
+                bias=None,
+                im2col_step=32):
+        if input is not None and input.dim() != 4:
+            raise ValueError(
+                f'Expected 4D tensor as input, got {input.dim()}D tensor \
+                  instead.')
+        ctx.stride = _pair(stride)
+        ctx.padding = _pair(padding)
+        ctx.dilation = _pair(dilation)
+        ctx.groups = groups
+        ctx.deform_groups = deform_groups
+        ctx.with_bias = bias is not None
+        ctx.im2col_step = im2col_step
+        if not ctx.with_bias:
+            bias = input.new_empty(0)  # fake tensor
+        # When pytorch version >= 1.6.0, amp is adopted for fp16 mode;
+        # amp won't cast the type of model (float32), but "offset" is cast
+        # to float16 by nn.Conv2d automatically, leading to the type
+        # mismatch with input (when it is float32) or weight.
+        # The flag for whether to use fp16 or amp is the type of "offset",
+        # we cast weight and input to temporarily support fp16 and amp
+        # whatever the pytorch version is.
+        input = input.type_as(offset)
+        weight = weight.type_as(input)
+        # ctx.save_for_backward(input, offset, mask, weight, bias)
+        output = input.new_empty(
+            ModulatedDeformConv2dFunction._output_size(ctx, input, weight))
+        ctx._bufs = [input.new_empty(0), input.new_empty(0)]
+        cur_im2col_step = min(ctx.im2col_step, input.size(0))
+        ext_module.deform_conv_forward(
+            input,
+            weight,
+            offset,
+            output,
+            ctx._bufs[0],
+            ctx._bufs[1],
+            kW=weight.size(3),
+            kH=weight.size(2),
+            dW=ctx.stride[1],
+            dH=ctx.stride[0],
+            padW=ctx.padding[1],
+            padH=ctx.padding[0],
+            dilationW=ctx.dilation[1],
+            dilationH=ctx.dilation[0],
+            group=ctx.groups,
+            deformable_group=ctx.deform_groups,
+            im2col_step=cur_im2col_step)
+        return output
 ```
 #### 2.2 MSDeformableAttention3D类注册
 为了避免覆盖源码，在projects/mmdet3d_plugin/surrondocc/modules/spatial_cross_attention.py 定义了类MSDeformableAttention3D_DL， 该类与源码的区别就是调用了MultiScaleDeformableAttnFunction_fp32_DL
@@ -156,6 +162,15 @@ class MultiScaleDeformableAttnFunction_fp32_DL(torch.autograd.Function):
     queries_rebatch[j, i, :index_query_per_img.shape[0]] = query[j, index_query_per_img]
     reference_points_rebatch[j, i, :index_query_per_img.shape[0]] = 
         reference_points_per_img[j, index_query_per_img]
+    ```
+6. tensorrt 8.5已经支持`nonzero`算子，DL卡尚未支持，因此将`projects/mmdet3d_plugin/surroundocc/modules/spatial_cross_attention.py`内的下述内容进行修改，但这样会增加计算量，并增加显存的消耗
+
+    ```
+    for i, mask_per_img in enumerate(bev_mask):
+        # Use nonzero will come out dynamic shape. so use all index.
+        # index_query_per_img = mask_per_img[0].sum(-1).nonzero().squeeze(-1)
+        index_query_per_img = torch.arange(mask_per_img[0].size(0))
+        indexes.append(index_query_per_img)
     ```
 ## Config 适配
 Config 参考文件:  projects/configs/surroundocc/surroundocc.py

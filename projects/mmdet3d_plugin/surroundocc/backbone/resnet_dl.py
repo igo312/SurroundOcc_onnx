@@ -5,7 +5,7 @@ import torch.utils.checkpoint as cp
 from mmcv.cnn import build_conv_layer, build_norm_layer, build_plugin_layer
 from mmcv.runner import BaseModule
 from torch.nn.modules.batchnorm import _BatchNorm
-from torch.nn.modules.utils import _pair, _single
+from torch.nn.modules.utils import _pair, _single,_quadruple
 
 from mmdet.models import BACKBONES
 import math 
@@ -13,10 +13,10 @@ import math
 # from ..builder import BACKBONES
 # from ..utils import ResLayer
 
-from mmcv.utils import ext_loader
+from mmcv.utils import ext_loader, print_log
 ext_module = ext_loader.load_ext(
     '_ext',
-    ['modulated_deform_conv_forward', 'modulated_deform_conv_backward'])
+    ['modulated_deform_conv_forward', 'modulated_deform_conv_backward', 'deform_conv_forward'])
 
 class BasicBlock(BaseModule):
     expansion = 1
@@ -103,32 +103,34 @@ class BasicBlock(BaseModule):
 class ModulatedDeformConv2dFunction(torch.autograd.Function):
 
     @staticmethod
-    def symbolic(g, input, offset, mask, weight, bias, stride, padding,
-                 dilation, groups, deform_groups):
-        input_tensors = [input, offset, mask, weight]
-        if bias is not None:
-            input_tensors.append(bias)
+    def symbolic(g, input, offset, weight, stride, padding,
+                 dilation, groups, deform_groups, bias=False, im2col_step=32):
+        
         return g.op(
             'DL::DeformConv2d',
-            *input_tensors,
+            input,
+            offset,
+            weight,
             stride_i=stride,
-            padding_i=padding,
+            padding_i=_quadruple(padding[0]),
             dilation_i=dilation,
             groups_i=groups,
-            deform_groups_i=deform_groups)
+            deform_groups_i=deform_groups,
+            bias_i=bias,
+            im2col_step_i=im2col_step)
 
     @staticmethod
     def forward(ctx,
                 input,
                 offset,
-                mask,
                 weight,
-                bias=None,
                 stride=1,
                 padding=0,
                 dilation=1,
                 groups=1,
-                deform_groups=1):
+                deform_groups=1,
+                bias=None,
+                im2col_step=32):
         if input is not None and input.dim() != 4:
             raise ValueError(
                 f'Expected 4D tensor as input, got {input.dim()}D tensor \
@@ -139,6 +141,7 @@ class ModulatedDeformConv2dFunction(torch.autograd.Function):
         ctx.groups = groups
         ctx.deform_groups = deform_groups
         ctx.with_bias = bias is not None
+        ctx.im2col_step = im2col_step
         if not ctx.with_bias:
             bias = input.new_empty(0)  # fake tensor
         # When pytorch version >= 1.6.0, amp is adopted for fp16 mode;
@@ -150,30 +153,29 @@ class ModulatedDeformConv2dFunction(torch.autograd.Function):
         # whatever the pytorch version is.
         input = input.type_as(offset)
         weight = weight.type_as(input)
-        ctx.save_for_backward(input, offset, mask, weight, bias)
+        # ctx.save_for_backward(input, offset, mask, weight, bias)
         output = input.new_empty(
             ModulatedDeformConv2dFunction._output_size(ctx, input, weight))
         ctx._bufs = [input.new_empty(0), input.new_empty(0)]
-        ext_module.modulated_deform_conv_forward(
+        cur_im2col_step = min(ctx.im2col_step, input.size(0))
+        ext_module.deform_conv_forward(
             input,
             weight,
-            bias,
-            ctx._bufs[0],
             offset,
-            mask,
             output,
+            ctx._bufs[0],
             ctx._bufs[1],
-            kernel_h=weight.size(2),
-            kernel_w=weight.size(3),
-            stride_h=ctx.stride[0],
-            stride_w=ctx.stride[1],
-            pad_h=ctx.padding[0],
-            pad_w=ctx.padding[1],
-            dilation_h=ctx.dilation[0],
-            dilation_w=ctx.dilation[1],
+            kW=weight.size(3),
+            kH=weight.size(2),
+            dW=ctx.stride[1],
+            dH=ctx.stride[0],
+            padW=ctx.padding[1],
+            padH=ctx.padding[0],
+            dilationW=ctx.dilation[1],
+            dilationH=ctx.dilation[0],
             group=ctx.groups,
             deformable_group=ctx.deform_groups,
-            with_bias=ctx.with_bias)
+            im2col_step=cur_im2col_step)
         return output
 
 
@@ -208,7 +210,8 @@ class DeformConv2d(nn.Module):
                  dilation=1,
                  groups=1,
                  deform_groups=1,
-                 bias=True):
+                 bias=True,
+                 im2col_step = 32):
         super(DeformConv2d, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -221,7 +224,7 @@ class DeformConv2d(nn.Module):
         # enable compatibility with nn.Conv2d
         self.transposed = False
         self.output_padding = _single(0)
-
+        self.im2col_step = im2col_step
         self.weight = nn.Parameter(
             torch.Tensor(out_channels, in_channels // groups,
                          *self.kernel_size))
@@ -240,18 +243,18 @@ class DeformConv2d(nn.Module):
         if self.bias is not None:
             self.bias.data.zero_()
 
-    def forward(self, x, offset, mask):
-        return deform_conv2d_func(x, offset, mask, self.weight, self.bias,
+    def forward(self, x, offset):
+        return deform_conv2d_func(x, offset, self.weight,
                                        self.stride, self.padding,
                                        self.dilation, self.groups,
-                                       self.deform_groups)
+                                       self.deform_groups, False, self.im2col_step)
     
 class DeformableConvPack(DeformConv2d):
     def __init__(self, *args, **kwargs):
         super(DeformableConvPack, self).__init__(*args, **kwargs)
         self.deform_groups = 1 # as configs set 
         self.conv_offset = nn.Conv2d(self.in_channels,
-                                     self.deform_groups * 3 * self.kernel_size[0] * self.kernel_size[1],
+                                     self.deform_groups * 2 * self.kernel_size[0] * self.kernel_size[1],
                                      kernel_size=self.kernel_size,
                                      stride=self.stride,
                                      padding = self.padding,
@@ -266,15 +269,42 @@ class DeformableConvPack(DeformConv2d):
             self.conv_offset.weight.data.zero_()
 
     def forward(self, x):
-        out = self.conv_offset(x)
-        o1, o2, mask = torch.chunk(out, 3, dim=1)
-        offset = torch.cat((o1, o2), dim=1) 
-        mask = torch.sigmoid(mask)
-        return deform_conv2d_func(x, offset, mask, self.weight, self.bias,
+        offset = self.conv_offset(x)
+        # o1, o2, mask = torch.chunk(out, 3, dim=1)
+        # offset = torch.cat((o1, o2), dim=1) 
+        # mask = torch.sigmoid(mask)
+        return deform_conv2d_func(x, offset, self.weight, 
                                        self.stride, self.padding,
                                        self.dilation, self.groups,
-                                       self.deform_groups)
-    
+                                       self.deform_groups, False, self.im2col_step)
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        version = local_metadata.get('version', None)
+
+        if version is None or version < 2:
+            # the key is different in early versions
+            # In version < 2, ModulatedDeformConvPack
+            # loads previous benchmark models.
+            if (prefix + 'conv_offset.weight' not in state_dict
+                    and prefix[:-1] + '_offset.weight' in state_dict):
+                state_dict[prefix + 'conv_offset.weight'] = state_dict.pop(
+                    prefix[:-1] + '_offset.weight')
+            if (prefix + 'conv_offset.bias' not in state_dict
+                    and prefix[:-1] + '_offset.bias' in state_dict):
+                state_dict[prefix +
+                           'conv_offset.bias'] = state_dict.pop(prefix[:-1] +
+                                                                '_offset.bias')
+
+        if version is not None and version > 1:
+            print_log(
+                f'ModulatedDeformConvPack {prefix.rstrip(".")} is upgraded to '
+                'version 2.',
+                logger='root')
+
+        super()._load_from_state_dict(state_dict, prefix, local_metadata,
+                                      strict, missing_keys, unexpected_keys,
+                                      error_msgs)
     
 
 class Bottleneck(BaseModule):
